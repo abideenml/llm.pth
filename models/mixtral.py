@@ -9,222 +9,21 @@ import torch.nn.functional as F
 import lightning as L
 from lightning.pytorch.utilities.model_summary import ModelSummary
 
-
 @dataclass
 class MOEConfig:
-    vocab_size: int = 51200
+    vocab_size: int = 50280
     seq_len: int = 2048
     d_model: int = 768
+    hidden_dim: int =  None
     num_heads: int = 8
+    num_kv_heads: int = 2
     num_layers: int = 8
-    dropout: float = 0.2
+    dropout: int = 0.2
     multiple_of: int = 4
-    bias: bool = True
-    eps: float = 1e-5
-    rotary_dim: float = 0.4
+    bias: int = False
     moe: bool = False
     num_experts: int = 4
     num_experts_per_tok: int = 2
-
-
-class KVCache:
-    def __init__(self, shape, max_seq_length, idx: int | None = None, device=None, dtype=None):
-        self.idx = idx
-        self.key: torch.Tensor = torch.zeros(shape, device=device, dtype=dtype)
-        self.value: torch.Tensor = torch.zeros(shape, device=device, dtype=dtype)
-        self.max_seq_length = max_seq_length
-
-    def forward(self, keys: Tensor, values: Tensor, start_pos: Tensor) -> tuple[Tensor, Tensor]:
-        bsz, T, _, _ = keys.shape
-        # print(f"start_pos={start_pos}, T={T}, bsz={bsz}")
-        self.key[:bsz, start_pos : start_pos + T] = keys
-        self.value[:bsz, start_pos : start_pos + T] = values
-        keys = self.key[:bsz, : start_pos + T]
-        values = self.value[:bsz, : start_pos + T]
-        return keys, values
-
-
-class RoPE(nn.Module):
-    def __init__(
-        self,
-        dims: int,
-        traditional: bool = False,
-        base: float = 10000,
-        scale: float = 1.0,
-    ):
-        super().__init__()
-
-        self.dims = dims
-        self.traditional = traditional
-        self.base = base
-        self.scale = scale
-
-    def _extra_repr(self):
-        return f"{self.dims}, traditional={self.traditional}"
-
-    def _compute_rope(self, costheta, sintheta, x) -> Tensor:
-        x1 = x[..., : self.dims // 2]
-        x2 = x[..., self.dims // 2 : self.dims]
-        rx1 = x1 * costheta - x2 * sintheta
-        rx2 = x1 * sintheta + x2 * costheta
-
-        if self.dims < x.shape[-1]:
-            rx = torch.concatenate([rx1, rx2, x[..., self.dims :]], axis=-1)
-        else:
-            rx = torch.concatenate([rx1, rx2], axis=-1)
-
-        return rx
-
-    def _compute_traditional_rope(self, costheta, sintheta, x):
-        x1 = x[..., ::2]
-        x2 = x[..., 1::2]
-        rx1 = x1 * costheta - x2 * sintheta
-        rx2 = x1 * sintheta + x2 * costheta
-
-        assert self.dims < x.shape[-1], "RoPE doesn't implement partial traditional application"
-
-        rx = torch.cat([rx1[..., None], rx2[..., None]], axis=-1)
-
-        return rx
-
-    def forward(self, x: Tensor, offset: int = 0):
-        shape = x.shape
-        x = x.reshape(-1, shape[-2], shape[-1])
-        N = x.shape[1] + offset
-        costheta, sintheta = RoPE.create_cos_sin_theta(
-            N,
-            self.dims,
-            offset=offset,
-            base=self.base,
-            scale=self.scale,
-            dtype=x.dtype,
-            device=x.device,
-        )
-
-        rope = self._compute_traditional_rope if self.traditional else self._compute_rope
-        rx = rope(costheta, sintheta, x)
-
-        return torch.reshape(rx, shape)
-
-    @staticmethod
-    def create_cos_sin_theta(
-        N: int,
-        D: int,
-        offset: int = 0,
-        base: float = 10000,
-        scale: float = 1.0,
-        dtype=torch.float32,
-        device=None,
-    ):
-        D = D // 2
-        positions = torch.arange(offset, N, dtype=dtype, device=device) * scale
-        freqs = torch.exp(-torch.arange(0.0, D, dtype=dtype, device=device) * (math.log(base) / D))
-        theta = torch.reshape(positions, (-1, 1)) * torch.reshape(freqs, (1, -1))
-        return torch.cos(theta), torch.sin(theta)
-
-
-def new_gelu(x: Tensor) -> Tensor:
-    return (
-        0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
-    )
-
-
-class MLP(nn.Module):
-    def __init__(self, dim, hidden):
-        super().__init__()
-        self.fc1 = nn.Linear(dim, hidden)
-        self.fc2 = nn.Linear(hidden, dim)
-
-    def forward(self, x: torch.Tensor):
-        x = self.fc1(x)
-        x = new_gelu(x)
-        return self.fc2(x)
-
-
-class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-5):
-        super().__init__()
-        """
-        Paper: https://arxiv.org/abs/1910.07467
-        """
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
-
-    def _norm(self, x: torch.Tensor):
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-
-    def forward(self, x):
-        output = self._norm(x.float()).type_as(x)
-        return output * self.weight
-
-
-class MHA(nn.Module):
-    def __init__(self, layer_idx, dim, num_heads, rotary_dim) -> None:
-        super().__init__()
-        self.dim = dim
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.layer_idx = layer_idx
-
-        self.k_proj = nn.Linear(dim, dim)
-        self.q_proj = nn.Linear(dim, dim)
-        self.v_proj = nn.Linear(dim, dim)
-        self.dense = nn.Linear(dim, dim)
-
-        self.rope = RoPE(int(rotary_dim * self.head_dim), traditional=False)
-
-    def forward(
-        self,
-        x: Tensor,
-        mask: Tensor = None,
-        kv_cache: KVCache | None = None,
-        position_ids: Tensor | None = None,
-    ) -> Tensor:
-        batch_size, seq_length, d_model = x.shape
-        # print(f"{batch_size}, {seq_length}, {d_model}")
-        k = self.k_proj(x)
-        q = self.q_proj(x)
-        v = self.v_proj(x)
-
-        k = k.view(batch_size, seq_length, self.num_heads, self.head_dim)
-        q = q.view(batch_size, seq_length, self.num_heads, self.head_dim)
-        v = v.view(batch_size, seq_length, self.num_heads, self.head_dim)
-
-        if kv_cache is not None:
-            k, v = kv_cache.forward(k, v, position_ids)
-
-        k: Tensor = k.transpose(1, 2).to(torch.float32)  # shape = (B, num_heads, seq_len, head_dim)
-        q: Tensor = q.transpose(1, 2).to(torch.float32)
-        v: Tensor = v.transpose(1, 2).to(torch.float32)
-
-        offset = position_ids if kv_cache else 0
-
-        q = self.rope.forward(q, offset=offset).to(torch.float32)
-        k = self.rope.forward(k).to(torch.float32)
-
-        # Finally perform the attention computation
-        scale = math.sqrt(1 / q.shape[-1])
-        scores = (q @ k.transpose(-1, -2)) * scale
-
-        if mask is not None:
-            mask = mask[:, :, :seq_length, :seq_length]
-            scores = scores + mask
-
-        scores = torch.softmax(scores, dim=-1).type_as(v)
-        output = (scores @ v).type_as(x)
-        output = output.transpose(1, 2).type_as(x)
-        output = output.reshape(batch_size, seq_length, self.dim)
-
-        return self.dense(output)
-
-    def scaled_dot_product_attention(self, q, k, v, mask):
-        scale = math.sqrt(self.head_dim)
-        scores = (q @ k.transpose(-1, -2)) * scale
-        if mask is not None:
-            scores = scores + mask
-        scores = torch.softmax(scores, dim=-1).type_as(v)
-        output = scores @ v
-        return output
 
 class SwiGLU(nn.Module):
     def __init__(
@@ -256,6 +55,174 @@ class SwiGLU(nn.Module):
     def forward(self, x):
         return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
 
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-5):
+        super().__init__()
+        """
+        Paper: https://arxiv.org/abs/1910.07467
+        """
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def _norm(self, x: torch.Tensor):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+
+    def forward(self, x):
+        output = self._norm(x.float()).type_as(x)
+        return output * self.weight
+
+def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+    # [: (dim // 2)] for odd number truncation
+    # torch.arange(0, dim, 2) -> 2(i-1)//d while i= 1,2,..,(d//2)
+
+    t = torch.arange(end, device=freqs.device)
+    freqs = torch.outer(t, freqs).float()  # gives diffrent angle vector
+
+    # e^it = cos(t) + i sin(t)
+    freqs_cos = torch.cos(freqs)  # real
+    freqs_sin = torch.sin(freqs)  # imaginary
+    return freqs_cos, freqs_sin
+
+
+def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
+    ndim = x.dim()
+    assert 1 < ndim
+    assert freqs_cis.shape == (
+        x.shape[1],
+        x.shape[-1],
+    ), f"{freqs_cis.shape=}, {(x.shape[1], x.shape[-1])=}"
+
+    # keep 2nd (T) and last(freq) dim same else make dim 1 for freq_cis
+    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
+    # print(shape)
+    return freqs_cis.view(shape)
+
+
+def apply_rope(k, q, cis):
+    # Idea suppose vector v = [x,y,x1,y1,...] # v.shape = dim
+    # convert vetor into complex num # ie two vec one real, one imagery
+    # [x,y,x1,y1,...] -> x+iy, x1+iy1
+    # Multiplying by complex num == roatate vector
+    # => (x + iy) * (cos + isin) -> x'+iy'
+    # restack
+    # x'+iy' -> [x',y',x1',y1'...]
+    # you roated vector in chunks of two lfg!!!
+    _, seq_len, _, _ = q.shape
+
+    freqs_cos, freqs_sin = cis
+    freqs_cos, freqs_sin = freqs_cos[:seq_len], freqs_sin[:seq_len]
+
+    #  rehsape a shape (...,n )-> (..., n//2,2)
+    q_cis = q.float().reshape(
+        q.shape[:-1] + (-1, 2)
+    )  # (B,T,nhead,C) -> (B,T,nhead,Cc,2) # Cc = C//2
+    k_cis = k.float().reshape(k.shape[:-1] + (-1, 2))  # (B,T,nhead,C) -> (B,T,nhead,Cc,2)
+
+    xq_r, xq_i = q_cis.unbind(-1)  # (B,T,nhead,Cc,2) -> ((B,T,Cc), (B,T,Cc)) split into two tuple
+    xk_r, xk_i = k_cis.unbind(-1)  # (B,T,nhead,Cc,2) -> ((B,T,Cc), (B,T,Cc))
+
+    freqs_cos = reshape_for_broadcast(freqs_cos, xq_r)  # freqs.shape = (1,T,1,Cc)
+    freqs_sin = reshape_for_broadcast(freqs_sin, xq_r)
+
+    # e+if = (a+ib) * (c+di) = (ac-bd) + i (ad+bc)
+    # a = xq_r , b = xq_i
+    # c = fcos , d = fsin
+    # ...
+    # e = (ac-bd) = xq_r * freqs_cos - xq_i * freqs_sin
+    # f = (c+di)  = xq_r * freqs_sin + xq_i * freqs_cos
+
+    xq_out_r = xq_r * freqs_cos - xq_i * freqs_sin  # (ac-bd)   # shape =  # (B,T,nhead,Cc)
+    xq_out_i = xq_r * freqs_sin + xq_i * freqs_cos  # (ad+bc) * i
+    xk_out_r = xk_r * freqs_cos - xk_i * freqs_sin  # (ac-bd)
+    xk_out_i = xk_r * freqs_sin + xk_i * freqs_cos  # (ad+bc) * i
+
+    # now we stack r,i -> [r,i,r2,i2]
+    xq_out = torch.stack([xq_out_r, xq_out_i], dim=-1)  # (B,T,nhead,Cc,2)
+    xk_out = torch.stack([xk_out_r, xk_out_i], dim=-1)  # (B,T,nhead,Cc,2)
+
+    # flatten last two dimensions
+    xq_out = xq_out.flatten(3)  # (B,T,nhead,C)
+    xk_out = xk_out.flatten(3)  # (B,T,nhead,C)
+
+    return xq_out.type_as(q), xk_out.type_as(q)
+
+
+class Attention(nn.Module):
+    def __init__(self, model_args: MOEConfig):
+        super().__init__()
+        d_model = model_args.d_model
+        self.num_heads = model_args.num_heads
+        self.head_dim = model_args.d_model // model_args.num_heads
+        self.num_kv_heads = (
+            model_args.num_heads if model_args.num_kv_heads == 0 else model_args.num_kv_heads
+        )
+        assert self.num_heads % self.num_kv_heads == 0
+        self.num_queries_per_kv = self.num_heads // self.num_kv_heads
+
+        self.key = nn.Linear(d_model, self.head_dim * self.num_heads)
+        self.query = nn.Linear(d_model, self.head_dim * self.num_kv_heads)
+        self.value = nn.Linear(d_model, self.head_dim * self.num_kv_heads)
+        self.proj = nn.Linear(d_model, d_model, model_args.bias)
+
+        self.attn_dropout = nn.Dropout(model_args.dropout)
+        self.res_dropout = nn.Dropout(model_args.dropout)
+
+        self.flash_attn = hasattr(torch.nn.functional, "scaled_dot_product_attention")
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor, freqs_cis) -> torch.Tensor:
+        batch, seq_len, d_model = x.shape
+
+        k: torch.Tensor  # type hint for lsp
+        q: torch.Tensor  # ignore
+        v: torch.Tensor
+
+        k = self.key(x)
+        q = self.query(x)
+        v = self.value(x)
+
+        k = k.view(
+            batch, seq_len, self.num_heads, self.head_dim
+        )  # shape = (B, seq_len, num_heads, head_dim)
+        q = q.view(batch, seq_len, self.num_heads, self.head_dim)
+        v = v.view(batch, seq_len, self.num_heads, self.head_dim)
+
+        q, k = apply_rope(q, k, freqs_cis)
+
+        # Grouped Query Attention
+        if self.num_kv_heads != self.num_heads:
+            k = torch.repeat_interleave(k, self.num_queries_per_kv, dim=2)
+            v = torch.repeat_interleave(v, self.num_queries_per_kv, dim=2)
+
+        k = k.transpose(1, 2)  # shape = (B, num_heads, seq_len, head_dim)
+        q = q.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        if self.flash_attn:
+            output = torch.nn.functional.scaled_dot_product_attention(
+                q,
+                k,
+                v,  # order impotent
+                attn_mask=None,
+                dropout_p=self.attn_dropout.p if self.training else 0.0,
+                is_causal=True,
+            )
+        else:
+            attn_mtx = torch.matmul(q, k.transpose(2, 3)) / math.sqrt(self.head_dim)
+            attn_mtx = attn_mtx + mask[:, :, :seq_len, :seq_len]
+            attn_mtx = F.softmax(attn_mtx.float(), dim=-1).type_as(k)
+            attn_mtx = self.attn_dropout(attn_mtx)
+
+            output = torch.matmul(attn_mtx, v)  # (batch, n_head, seq_len, head_dim)
+
+        # restore time as batch dimension and concat heads
+        output = output.transpose(1, 2).contiguous().view(batch, seq_len, d_model)
+
+        # final projection into the residual stream
+        output = self.proj(output)
+        output = self.res_dropout(output)
+        return output
 
 class MoE(nn.Module):
     def __init__(
@@ -317,24 +284,25 @@ class MoE(nn.Module):
         output = output.sum(dim=1)
 
         return output
+    
 
 class Block(nn.Module):
-    def __init__(self, config: MOEConfig):
+    def __init__(self, model_args: MOEConfig):
         super().__init__()
 
-        self.attn = MHA(config)
-        if config.moe:
-            self.ff = MoE(config.d_model, config.multiple_of * config.d_model, config.num_experts, config.num_experts_per_tok)
-        else: 
+        self.attn = Attention(model_args)
+        if model_args.moe:
+            self.ff = MoE(model_args.d_model, model_args.multiple_of * model_args.d_model, model_args.num_experts, model_args.num_experts_per_tok)
+        else:
             self.ff = SwiGLU(
-                dim=config.d_model,
-                hidden_dim=config.hidden_dim,
-                dropout=config.dropout,
-                bias=config.bias,
+            dim=model_args.d_model,
+            hidden_dim=model_args.hidden_dim,
+            dropout=model_args.dropout,
+            bias=model_args.bias,
             )
 
-        self.norm1 = RMSNorm(config.d_model)
-        self.norm2 = RMSNorm(config.d_model)
+        self.norm1 = RMSNorm(model_args.d_model)
+        self.norm2 = RMSNorm(model_args.d_model)
 
     def forward(self, x, mask, freqs_cis):
         x = x + self.attn(self.norm1(x), mask, freqs_cis)
@@ -342,72 +310,60 @@ class Block(nn.Module):
         return x
 
 
-
 class Mixtral(nn.Module):
-    def __init__(self, config: MOEConfig) -> None:
-        super().__init__()
-        self.config = config
-        self.wte = nn.Embedding(config.vocab_size, config.d_model)
-        self.layers = nn.ModuleList([Block(config, i) for i in range(config.num_layers)])
+    def __init__(self, model_args: MOEConfig, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
 
-        self.ln = RMSNorm(config.d_model, eps=config.eps)
-        self.lm_head = nn.Linear(config.d_model, config.vocab_size)
-        self.loss_fn = nn.CrossEntropyLoss()
+        self.config = model_args
 
-        mask = torch.full((1, 1, config.seq_len, config.seq_len), float("-inf"))
+        self.token_emb = nn.Embedding(model_args.vocab_size, model_args.d_model)
 
-        (
-            1,
-            config.seq_len,
-            config.num_heads,
-            config.d_model // config.num_heads,
+        self.layers = nn.ModuleList([Block(model_args) for _ in range(model_args.num_layers)])
+
+        self.norm = RMSNorm(model_args.d_model)
+        self.vocab_proj = nn.Linear(model_args.d_model, model_args.vocab_size, bias=False)
+
+        self.token_emb.weight = self.vocab_proj.weight
+
+        self.cis = precompute_freqs_cis(
+            model_args.d_model // model_args.num_heads, model_args.seq_len * 2
         )
 
-        mask = torch.triu(mask, diagonal=1)
-        self.register_buffer("mask", mask)
+        if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
+            print("WARNING: using slow attention | upgrade pytorch to 2.0 or above")
+            mask = torch.full((1, 1, model_args.seq_len, model_args.seq_len), float("-inf"))
+            mask = torch.triu(mask, diagonal=1)
+            self.register_buffer("mask", mask)
+        else:
+            self.mask = None
 
-    def forward(self, x, kv_cache: list[KVCache] | None = None, position_ids=None):
-        mask = self.mask
-        if kv_cache is not None:
-            x = x[:, position_ids:]
-            mask = None
-        # print(f"{x.shape=} {kv_cache=}")
-        x = self.wte(x)
-        # print(f"{x.sum(dim=-1)=}")
-        cache = None
-        for idx, layer in enumerate(self.layers):
-            if kv_cache is not None:
-                cache = kv_cache[idx]
-            x = layer(x.to(self.wte.weight.dtype), mask, cache, position_ids=position_ids)
+        self.apply(self._init_weights)
 
-        x = self.ln(x)
-        x = self.lm_head(x)
+    def forward(self, x: torch.Tensor):
+        batch, seqlen = x.shape
+        x = self.token_emb(x)
+        device = self.token_emb.weight.device
+        freqs_cis = self.cis[0][:seqlen].to(device), self.cis[1][:seqlen].to(device)
+
+        for layer in self.layers:
+            x = layer(x, self.mask, freqs_cis)
+
+        x = self.norm(x)
+        x = self.vocab_proj(x)
         return x
 
-    def loss(self, logits: Tensor, labels: Tensor):
-        loss = self.loss_fn(logits.view(-1, logits.size(-1)), labels.view(-1))
-        return loss
-
-    def build_kv_cache(self) -> list[KVCache]:
-        shape = (
-            1,
-            self.config.seq_len,
-            self.config.num_heads,
-            self.config.d_model // self.config.num_heads,
-        )
-        kv_cache = []
-        dtype = self.wte.weight.dtype
-        device = self.wte.weight.device
-
-        for idx in range(self.config.num_layers):
-            kv_cache.append(KVCache(shape, self.config.seq_len, idx, device=device, dtype=dtype))
-        return kv_cache
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
 class Model(L.LightningModule):
     def __init__(self, model, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.model = model
-
 
 def convert_int_to_shortened_string(num):
     if abs(num) < 1000:
@@ -420,7 +376,6 @@ def convert_int_to_shortened_string(num):
         return f"{num / 1000000000:.1f}B"
     else:
         return f"{num / 1000000000000:.1f}T"
-
 
 def model_summary(model: nn.Module, print_summary=False):
     "conver normal model to lightning model and print model summary"
