@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from typing import Any
+import torch.nn.functional as F
 import lightning as L
 from lightning.pytorch.utilities.model_summary import ModelSummary
 
@@ -140,12 +141,21 @@ class MLP(nn.Module):
         return self.fc2(x)
 
 
-class LayerNorm(nn.LayerNorm):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-5):
+        super().__init__()
+        """
+        Paper: https://arxiv.org/abs/1910.07467
+        """
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
 
-    def forward(self, x: Tensor) -> Tensor:
-        return super().forward(x)
+    def _norm(self, x: torch.Tensor):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+
+    def forward(self, x):
+        output = self._norm(x.float()).type_as(x)
+        return output * self.weight
 
 
 class MHA(nn.Module):
@@ -308,35 +318,29 @@ class MoE(nn.Module):
 
         return output
 
-
-
 class Block(nn.Module):
-    def __init__(
-        self,
-        config: MOEConfig,
-        block_idx: int | None = None,
-    ) -> None:
+    def __init__(self, config: MOEConfig):
         super().__init__()
 
-        self.ln = LayerNorm(config.d_model, eps=config.eps)
-        self.block_idx = block_idx
-
-        self.mixer = MHA(block_idx, config.d_model, config.num_heads, config.rotary_dim)
+        self.attn = MHA(config)
         if config.moe:
-            self.mlp = MoE(config.d_model, config.multiple_of * config.d_model, config.num_experts, config.num_experts_per_tok)
+            self.ff = MoE(config.d_model, config.multiple_of * config.d_model, config.num_experts, config.num_experts_per_tok)
         else: 
-            self.mlp = MLP(config.d_model, config.multiple_of * config.d_model)
+            self.ff = SwiGLU(
+                dim=config.d_model,
+                hidden_dim=config.hidden_dim,
+                dropout=config.dropout,
+                bias=config.bias,
+            )
 
-    def forward(
-        self,
-        x: torch.FloatTensor,
-        mask: torch.BoolTensor | None = None,
-        kv_cache: list[KVCache] | None = None,
-        position_ids: torch.LongTensor | None = None,
-    ) -> torch.FloatTensor:
-        residual = x
-        x = self.ln(x)
-        return self.mixer(x, mask, kv_cache, position_ids) + self.mlp(x) + residual
+        self.norm1 = RMSNorm(config.d_model)
+        self.norm2 = RMSNorm(config.d_model)
+
+    def forward(self, x, mask, freqs_cis):
+        x = x + self.attn(self.norm1(x), mask, freqs_cis)
+        x = x + self.ff(self.norm2(x))
+        return x
+
 
 
 class Mixtral(nn.Module):
@@ -346,7 +350,7 @@ class Mixtral(nn.Module):
         self.wte = nn.Embedding(config.vocab_size, config.d_model)
         self.layers = nn.ModuleList([Block(config, i) for i in range(config.num_layers)])
 
-        self.ln = LayerNorm(config.d_model, eps=config.eps)
+        self.ln = RMSNorm(config.d_model, eps=config.eps)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size)
         self.loss_fn = nn.CrossEntropyLoss()
 
