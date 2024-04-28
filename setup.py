@@ -12,6 +12,7 @@ setup(
     url="https://github.com/abideenml/llm.pth",
     install_requires=[
         "transformers",
+        "rich",
         "lightning",
         "datasets",
         "torch",
