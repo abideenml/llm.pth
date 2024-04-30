@@ -1,10 +1,15 @@
 from __future__ import annotations
 import math
+import os
+import json
 from dataclasses import dataclass
 import torch
+from tqdm import tqdm
 import torch.nn as nn
 from torch import Tensor
 from typing import Any
+from safetensors import safe_open
+from huggingface_hub import snapshot_download
 import lightning as L
 from lightning.pytorch.utilities.model_summary import ModelSummary
 
@@ -299,6 +304,126 @@ class Phi(nn.Module):
         for idx in range(self.config.num_layers):
             kv_cache.append(KVCache(shape, self.config.seq_len, idx, device=device, dtype=dtype))
         return kv_cache
+    
+    @staticmethod
+    def from_pretrained(name: str) -> nn.Module:
+        config = PhiConfig()
+        model = Phi(config)
+        # return model
+
+        path_name = snapshot_download(name)
+        with open(os.path.join(path_name, "config.json"), encoding="utf-8") as f:
+            json.load(f)
+
+        files = ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+        weights = {}
+        for f in files:
+            w = safe_open(os.path.join(path_name, f), framework="pt", device="cpu")
+            for k in w.keys():
+                # print(k)
+                weights[k] = w.get_tensor(k)
+
+        assert model.wte.weight.data.shape == weights["model.embed_tokens.weight"].shape
+        model.wte.weight.data = weights["model.embed_tokens.weight"]
+
+        assert model.lm_head.weight.data.shape == weights["lm_head.weight"].shape
+        model.lm_head.weight.data = weights["lm_head.weight"]
+
+        assert model.lm_head.bias.data.shape == weights["lm_head.bias"].shape
+        model.lm_head.bias.data = weights["lm_head.bias"]
+
+        assert model.ln.weight.data.shape == weights["model.final_layernorm.weight"].shape
+        model.ln.weight.data = weights["model.final_layernorm.weight"]
+
+        assert model.ln.bias.data.shape == weights["model.final_layernorm.bias"].shape
+        model.ln.bias.data = weights["model.final_layernorm.bias"]
+
+        for idx, layer in tqdm(enumerate(model.layers), total=len(model.layers)):
+            layer: Block
+
+            assert (
+                layer.mlp.fc1.weight.data.shape
+                == weights[f"model.layers.{idx}.mlp.fc1.weight"].shape
+            )
+            layer.mlp.fc1.weight.data = weights[f"model.layers.{idx}.mlp.fc1.weight"]
+
+            assert (
+                layer.mlp.fc1.bias.data.shape == weights[f"model.layers.{idx}.mlp.fc1.bias"].shape
+            )
+            layer.mlp.fc1.bias.data = weights[f"model.layers.{idx}.mlp.fc1.bias"]
+
+            assert (
+                layer.mlp.fc2.weight.data.shape
+                == weights[f"model.layers.{idx}.mlp.fc2.weight"].shape
+            )
+            layer.mlp.fc2.weight.data = weights[f"model.layers.{idx}.mlp.fc2.weight"]
+
+            assert (
+                layer.mlp.fc2.bias.data.shape == weights[f"model.layers.{idx}.mlp.fc2.bias"].shape
+            )
+            layer.mlp.fc2.bias.data = weights[f"model.layers.{idx}.mlp.fc2.bias"]
+
+            assert (
+                layer.mixer.q_proj.weight.data.shape
+                == weights[f"model.layers.{idx}.self_attn.q_proj.weight"].shape
+            )
+            layer.mixer.q_proj.weight.data = weights[f"model.layers.{idx}.self_attn.q_proj.weight"]
+
+            assert (
+                layer.mixer.q_proj.bias.data.shape
+                == weights[f"model.layers.{idx}.self_attn.q_proj.bias"].shape
+            )
+            layer.mixer.q_proj.bias.data = weights[f"model.layers.{idx}.self_attn.q_proj.bias"]
+
+            assert (
+                layer.mixer.k_proj.weight.data.shape
+                == weights[f"model.layers.{idx}.self_attn.k_proj.weight"].shape
+            )
+            layer.mixer.k_proj.weight.data = weights[f"model.layers.{idx}.self_attn.k_proj.weight"]
+
+            assert (
+                layer.mixer.k_proj.bias.data.shape
+                == weights[f"model.layers.{idx}.self_attn.k_proj.bias"].shape
+            )
+            layer.mixer.k_proj.bias.data = weights[f"model.layers.{idx}.self_attn.k_proj.bias"]
+
+            assert (
+                layer.mixer.v_proj.weight.data.shape
+                == weights[f"model.layers.{idx}.self_attn.v_proj.weight"].shape
+            )
+            layer.mixer.v_proj.weight.data = weights[f"model.layers.{idx}.self_attn.v_proj.weight"]
+
+            assert (
+                layer.mixer.v_proj.bias.data.shape
+                == weights[f"model.layers.{idx}.self_attn.v_proj.bias"].shape
+            )
+            layer.mixer.v_proj.bias.data = weights[f"model.layers.{idx}.self_attn.v_proj.bias"]
+
+            assert (
+                layer.mixer.dense.weight.data.shape
+                == weights[f"model.layers.{idx}.self_attn.dense.weight"].shape
+            )
+            layer.mixer.dense.weight.data = weights[f"model.layers.{idx}.self_attn.dense.weight"]
+
+            assert (
+                layer.mixer.dense.bias.data.shape
+                == weights[f"model.layers.{idx}.self_attn.dense.bias"].shape
+            )
+            layer.mixer.dense.bias.data = weights[f"model.layers.{idx}.self_attn.dense.bias"]
+
+            assert (
+                layer.ln.weight.data.shape
+                == weights[f"model.layers.{idx}.input_layernorm.weight"].shape
+            )
+            layer.ln.weight.data = weights[f"model.layers.{idx}.input_layernorm.weight"]
+
+            assert (
+                layer.ln.bias.data.shape
+                == weights[f"model.layers.{idx}.input_layernorm.bias"].shape
+            )
+            layer.ln.bias.data = weights[f"model.layers.{idx}.input_layernorm.bias"]
+
+        return model
 
 class Model(L.LightningModule):
     def __init__(self, model, *args: Any, **kwargs: Any) -> None:
