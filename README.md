@@ -11,7 +11,9 @@ Added LoRA and Dora. Looking at Olmo sft trainer implementation now.
 
 2024-04-26
 ----------
-Want to add SFT. Trying to find out its from scratch implementation. Nothing found except transformers trainer. TRL only extends this and calls .train for SFT. Is there a different loss function for SFT or same as pre-training? IDK
+Want to add SFT. Trying to find out its from scratch implementation. Nothing found except 
+transformers trainer. TRL only extends this and calls .train for SFT. 
+Is there a different loss function for SFT or same as pre-training? IDK
 
 2024-04-27
 ----------
@@ -23,7 +25,7 @@ Pre-training script added. Training with Fabric is running fine.
 
 2024-04-25
 ----------
-Added LLM architectures i.e. Llama, phi, mixtral
+Added LLM architectures i.e. Llama, phi, mixtral.
 
 ```
 
