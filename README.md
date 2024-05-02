@@ -5,6 +5,10 @@ Implementation of various Autoregressive models, Research papers and techniques.
 
 ## Research log
 
+2024-05-02
+----------
+Explored OLMo, litgpt sft pipelines. Found out the loss function is same, just a little difference in the inputs to CSE. Exploring the data prep for sft different formats as well.
+
 2024-05-01
 ----------
 Added LoRA and Dora. Looking at Olmo sft trainer implementation now.
