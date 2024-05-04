@@ -5,7 +5,13 @@ Implementation of various Autoregressive models, Research papers and techniques.
 
 ## Research log
 
-2024-05-02
+2024-05-05
+----------
+SFT data preprocessing script added. Took alot of time to get the data in right format 
+and then into the cycle iterator for training. SFT script is working. 
+Lora/Dora/Qlora not integrated with training script yet.
+
+2024-05-04
 ----------
 Tried replacing Linear layers in Llama model with Kolmogorov-Arnold Network layers. 
 Total model param of Llama model with linear layers shrank 
