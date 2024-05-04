@@ -7,6 +7,13 @@ Implementation of various Autoregressive models, Research papers and techniques.
 
 2024-05-02
 ----------
+Tried replacing Linear layers in Llama model with Kolmogorov-Arnold Network layers. 
+Total model param of Llama model with linear layers shrank 
+from 75M to 47.5M by using KAN. Training script yet to 
+be updated to add support kanLlama training.
+
+2024-05-02
+----------
 Explored OLMo, litgpt sft pipelines. Found out the loss function is same, just a little difference in the inputs to CSE. Exploring the data prep for sft different formats as well.
 
 2024-05-01
