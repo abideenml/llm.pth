@@ -15,7 +15,8 @@ import torch.optim as optim
 
 from llm.models.phi import Phi, PhiConfig, model_summary
 from llm.utils.scheduler import CosineScheduler
-from llm.utils.dataset import PreTokenizedDataset, BetterCycle, auto_accelerator
+from llm.utils.dataset import *
+from llm.utils.sftdata import *
 
 
 from torch.utils.data import DataLoader
@@ -110,11 +111,11 @@ def train(
     fabric.launch()
     ignore_index = ignore_index if ignore_index else -1
     # sanity test
-    validate(fabric, model, val_dataloader, 5, device=device)
+    # validate(fabric, model, val_dataloader, 5, device=device)
     # cyclining loder so you can runit indefinitely
-    train_dataloader = BetterCycle(iter(train_dataloader))
-    val_dataloader = BetterCycle(iter(val_dataloader))
-    (data, target) = next(val_dataloader)
+    train_iterator = BetterCycle(train_dataloader)
+    val_iterator= BetterCycle(val_dataloader)
+    (data, target) = next(train_iterator)
     tokerns_per_iter = int(math.prod(data.shape) * micro_batch)
 
     micro_batch_loss: float = 0
@@ -131,9 +132,10 @@ def train(
             param_group["lr"] = lr
         # ...
         for _ in range(micro_batch):
-            (data, target) = next(train_dataloader)
+            batch = next(train_iterator)
+            input_ids, target = batch[0], batch[1]
             with fabric.no_backward_sync(model, enabled=micro_batch == 1):
-                logits: torch.Tensor = model(data)
+                logits: torch.Tensor = model(input_ids)
                 loss = F.cross_entropy(
                     logits.view(-1, logits.size(-1)),
                     target.view(-1),
@@ -236,6 +238,23 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 
+    train_ds = PreTokenizedDataset(
+        dataset_name="GAIR/lima",
+        tokenizer=tokenizer,
+        split="train",
+        max_length=100,
+    ) 
+    test_ds = PreTokenizedDataset(
+        dataset_name="GAIR/lima",
+        tokenizer=tokenizer,
+        split="validation",
+        max_length=100,
+    )
+
+    train_dataloader = DataLoader(train_ds, batch_size=batch_size)
+    test_dataloader = DataLoader(test_ds, batch_size=batch_size)
+    train_dataloader, test_dataloader = fabric.setup_dataloaders(train_dataloader, test_dataloader)
+
     config = PhiConfig(
         vocab_size=tokenizer.vocab_size,
         d_model=d_model,
@@ -244,27 +263,12 @@ def main():
         num_heads=num_layers,
         multiple_of=multiple_of,
     )
-
-    train_ds = PreTokenizedDataset(
-        dataset_name=dataset_name,
-        tokenizer=tokenizer,
-        split="train",
-        max_length=seq_len,
-    )
-    test_ds = PreTokenizedDataset(
-        dataset_name=dataset_name,
-        tokenizer=tokenizer,
-        split="validation",
-        max_length=seq_len,
-    )
-
-    train_dataloader = DataLoader(train_ds, batch_size=batch_size)
-    test_dataloader = DataLoader(test_ds, batch_size=batch_size)
-    train_dataloader, test_dataloader = fabric.setup_dataloaders(train_dataloader, test_dataloader)
-
+    #  model_name = "cognitivecomputations/dolphin-2_6-phi-2"
+    #  model: Phi = Phi.from_pretrained(model_name).to(device).eval().to(torch.float16)
     model = Phi(config)
     for param in model.parameters():
         param.requires_grad = False
+    
     lora_r = 8
     lora_alpha = 16
     lora_dropout = 0.05
@@ -305,7 +309,7 @@ def main():
         model = torch.compile(model)
 
     print(model)
-    print(model_summary(model))
+    print(model_summary(model)) 
 
     get_lr = CosineScheduler(
         learning_rate=learning_rate,
@@ -331,23 +335,6 @@ def main():
         ignore_index=tokenizer.pad_token_id,
     )
 
-    # # TODO: Replace this inference
-    # start: float = time.time()
-    # max_tokens = 200
-    # model = model.eval()
-    # inputs = tokenizer.encode("Once")
-    # with torch.no_grad():
-    #     inputs = torch.tensor(inputs).reshape(1, -1).to(device).clone().detach()
-    #     for _idx in range(max_tokens):
-    #         logits = model(inputs)
-    #         max_logits = torch.argmax(logits, dim=-1)
-    #         inputs: torch.Tensor = torch.cat((inputs, max_logits[:, -1:]), dim=-1)
-    #         inputs.shape[1] - 1
-    #         print(tokenizer.decode(inputs.tolist()[0][-1]), end="", flush=True)
-
-    # end: float = time.time()
-
-    # print(f"Time: {end-start}")
 
 
 if __name__ == "__main__":
