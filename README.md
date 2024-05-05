@@ -5,6 +5,11 @@ Implementation of various Autoregressive models, Research papers and techniques.
 
 ## Research log
 
+2024-05-06
+----------
+DPO/KTO/IPO script added. Data prep for argilla/dpo-mix-7 added. 
+Currently single gpu, and no quantization supported.
+
 2024-05-05
 ----------
 SFT data preprocessing script added. Took alot of time to get the data in right format 
