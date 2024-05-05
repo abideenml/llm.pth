@@ -15,7 +15,8 @@ import torch.optim as optim
 
 from llm.models.phi import Phi, PhiConfig, model_summary
 from llm.utils.scheduler import CosineScheduler
-from llm.utils.dataset import PreTokenizedDataset, BetterCycle, auto_accelerator
+from llm.utils.dataset import *
+from llm.utils.sftdata import *
 
 
 from torch.utils.data import DataLoader
@@ -254,22 +255,23 @@ def main():
     )
 
     train_ds = PreTokenizedDataset(
-        dataset_name=dataset_name,
+        dataset_name="GAIR/lima",
         tokenizer=tokenizer,
         split="train",
-        max_length=seq_len,
-    )
+        max_length=100,
+    ) 
     test_ds = PreTokenizedDataset(
-        dataset_name=dataset_name,
+        dataset_name="GAIR/lima",
         tokenizer=tokenizer,
         split="validation",
-        max_length=seq_len,
+        max_length=100,
     )
 
     train_dataloader = DataLoader(train_ds, batch_size=batch_size)
     test_dataloader = DataLoader(test_ds, batch_size=batch_size)
     train_dataloader, test_dataloader = fabric.setup_dataloaders(train_dataloader, test_dataloader)
-
+    #  model_name = "cognitivecomputations/dolphin-2_6-phi-2"
+    #  model: Phi = Phi.from_pretrained(model_name).to(device).eval().to(torch.float16)
     model = Phi(config)
     for param in model.parameters():
         param.requires_grad = False
@@ -338,24 +340,6 @@ def main():
         get_lr=get_lr,
         ignore_index=tokenizer.pad_token_id,
     )
-
-    # # TODO: Replace this inference
-    # start: float = time.time()
-    # max_tokens = 200
-    # model = model.eval()
-    # inputs = tokenizer.encode("Once")
-    # with torch.no_grad():
-    #     inputs = torch.tensor(inputs).reshape(1, -1).to(device).clone().detach()
-    #     for _idx in range(max_tokens):
-    #         logits = model(inputs)
-    #         max_logits = torch.argmax(logits, dim=-1)
-    #         inputs: torch.Tensor = torch.cat((inputs, max_logits[:, -1:]), dim=-1)
-    #         inputs.shape[1] - 1
-    #         print(tokenizer.decode(inputs.tolist()[0][-1]), end="", flush=True)
-
-    # end: float = time.time()
-
-    # print(f"Time: {end-start}")
 
 
 if __name__ == "__main__":
