@@ -74,13 +74,8 @@ class RMSNorm(nn.Module):
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    # [: (dim // 2)] for odd number truncation
-    # torch.arange(0, dim, 2) -> 2(i-1)//d while i= 1,2,..,(d//2)
-
     t = torch.arange(end, device=freqs.device)
     freqs = torch.outer(t, freqs).float()  # gives diffrent angle vector
-
-    # e^it = cos(t) + i sin(t)
     freqs_cos = torch.cos(freqs)  # real
     freqs_sin = torch.sin(freqs)  # imaginary
     return freqs_cos, freqs_sin
@@ -93,59 +88,29 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
         x.shape[1],
         x.shape[-1],
     ), f"{freqs_cis.shape=}, {(x.shape[1], x.shape[-1])=}"
-
-    # keep 2nd (T) and last(freq) dim same else make dim 1 for freq_cis
     shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-    # print(shape)
     return freqs_cis.view(shape)
 
 
-def apply_rope(k, q, cis):
-    # Idea suppose vector v = [x,y,x1,y1,...] # v.shape = dim
-    # convert vetor into complex num # ie two vec one real, one imagery
-    # [x,y,x1,y1,...] -> x+iy, x1+iy1
-    # Multiplying by complex num == roatate vector
-    # => (x + iy) * (cos + isin) -> x'+iy'
-    # restack
-    # x'+iy' -> [x',y',x1',y1'...]
-    # you roated vector in chunks of two lfg!!!
-    _, seq_len, _, _ = q.shape
 
+def apply_rope(k, q, cis):
+    _, seq_len, _, _ = q.shape
     freqs_cos, freqs_sin = cis
     freqs_cos, freqs_sin = freqs_cos[:seq_len], freqs_sin[:seq_len]
-
-    #  rehsape a shape (...,n )-> (..., n//2,2)
-    q_cis = q.float().reshape(
-        q.shape[:-1] + (-1, 2)
-    )  # (B,T,nhead,C) -> (B,T,nhead,Cc,2) # Cc = C//2
+    q_cis = q.float().reshape(q.shape[:-1] + (-1, 2))  # (B,T,nhead,C) -> (B,T,nhead,Cc,2) # Cc = C//2
     k_cis = k.float().reshape(k.shape[:-1] + (-1, 2))  # (B,T,nhead,C) -> (B,T,nhead,Cc,2)
-
     xq_r, xq_i = q_cis.unbind(-1)  # (B,T,nhead,Cc,2) -> ((B,T,Cc), (B,T,Cc)) split into two tuple
     xk_r, xk_i = k_cis.unbind(-1)  # (B,T,nhead,Cc,2) -> ((B,T,Cc), (B,T,Cc))
-
     freqs_cos = reshape_for_broadcast(freqs_cos, xq_r)  # freqs.shape = (1,T,1,Cc)
     freqs_sin = reshape_for_broadcast(freqs_sin, xq_r)
-
-    # e+if = (a+ib) * (c+di) = (ac-bd) + i (ad+bc)
-    # a = xq_r , b = xq_i
-    # c = fcos , d = fsin
-    # ...
-    # e = (ac-bd) = xq_r * freqs_cos - xq_i * freqs_sin
-    # f = (c+di)  = xq_r * freqs_sin + xq_i * freqs_cos
-
     xq_out_r = xq_r * freqs_cos - xq_i * freqs_sin  # (ac-bd)   # shape =  # (B,T,nhead,Cc)
     xq_out_i = xq_r * freqs_sin + xq_i * freqs_cos  # (ad+bc) * i
     xk_out_r = xk_r * freqs_cos - xk_i * freqs_sin  # (ac-bd)
     xk_out_i = xk_r * freqs_sin + xk_i * freqs_cos  # (ad+bc) * i
-
-    # now we stack r,i -> [r,i,r2,i2]
     xq_out = torch.stack([xq_out_r, xq_out_i], dim=-1)  # (B,T,nhead,Cc,2)
     xk_out = torch.stack([xk_out_r, xk_out_i], dim=-1)  # (B,T,nhead,Cc,2)
-
-    # flatten last two dimensions
     xq_out = xq_out.flatten(3)  # (B,T,nhead,C)
     xk_out = xk_out.flatten(3)  # (B,T,nhead,C)
-
     return xq_out.type_as(q), xk_out.type_as(q)
 
 
@@ -224,7 +189,7 @@ class Attention(nn.Module):
         output = self.res_dropout(output)
         return output
 
-class MoE(nn.Module):
+class MoE(torch.nn.Module):
     def __init__(
         self,
         dim: int,
@@ -236,51 +201,35 @@ class MoE(nn.Module):
         super().__init__()
         self.num_experts = num_experts
         self.num_experts_per_tok = num_experts_per_tok
-
         mlp_block = SwiGLU
-
-        self.experts = nn.ModuleList([mlp_block(dim, hidden_dim) for i in range(num_experts)])
-        self.gate = nn.Linear(dim, num_experts, bias=False)
+        self.experts = torch.nn.ModuleList([mlp_block(dim, hidden_dim) for i in range(num_experts)])
+        self.gate = torch.nn.Linear(dim, num_experts, bias=False)
 
     def forward(self, x: torch.Tensor):
         batch_size, seq_len, dim = x.shape  # (batch_size, seq_len, dim)
-
         # (batch_size , seq_len, dim) -> (batch_size * seq_len, dim)
         x = x.view(batch_size * seq_len, dim)
-
         # (batch_size * seq_len, dim) -> (batch_size * seq_len, num_experts)
         scores = self.gate(x)
-
         # expert_weights -> (batch_size * seq_len, num_experts_per_tok)
         # expert_indices -> (batch_size * seq_len, num_experts_per_tok)
         expert_weights, expert_indices = torch.topk(scores, self.num_experts_per_tok, dim=-1)
-
         # -> (batch_size * seq_len, num_experts_per_tok)
         expert_weights = expert_weights.softmax(dim=-1)
-
         #  -> (batch_size * seq_len * num_experts_per_tok ) 1D
         flat_expert_indices = expert_indices.view(-1)
-
         # (batch_size * seq_len, dim) -> (batch_size * seq_len * num_experts_per_tok, dim)
         # create copied of inputs for each expert
         x = x.repeat_interleave(self.num_experts_per_tok, dim=0)
-
         # (total_tokens,dim)
         output = torch.empty_like(x, dtype=x.dtype, device=x.device)
-
         for idx, expert in enumerate(self.experts):
             # filtered_x - selected toks that to be sent to nth expert
             filtered_x = x[flat_expert_indices == idx]
             output[flat_expert_indices == idx] = expert(filtered_x)
-
-        # ->B,T,num_experts_per_tok,dim
         output = output.view(*expert_weights.shape, -1)
         expert_weights = expert_weights.unsqueeze(-1)
-
         output = output * expert_weights
-
-        # sum up experts outputs
-        # batch_size * seq_len, num_experts_per_tok, dim -> batch_size * seq_len, dim
         output = output.sum(dim=1)
 
         return output
@@ -298,8 +247,6 @@ class Block(nn.Module):
             bias=model_args.bias,
         )
         self.ff2 = MoE(model_args.d_model, model_args.multiple_of * model_args.d_model, model_args.num_experts, model_args.num_experts_per_tok)
-    
-
         self.norm1 = RMSNorm(model_args.d_model)
         self.norm2 = RMSNorm(model_args.d_model)
 
@@ -313,22 +260,13 @@ class Block(nn.Module):
 class Arctic(nn.Module):
     def __init__(self, model_args: HybridConfig, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-
         self.config = model_args
-
         self.token_emb = nn.Embedding(model_args.vocab_size, model_args.d_model)
-
         self.layers = nn.ModuleList([Block(model_args) for _ in range(model_args.num_layers)])
-
         self.norm = RMSNorm(model_args.d_model)
         self.vocab_proj = nn.Linear(model_args.d_model, model_args.vocab_size, bias=False)
-
         self.token_emb.weight = self.vocab_proj.weight
-
-        self.cis = precompute_freqs_cis(
-            model_args.d_model // model_args.num_heads, model_args.seq_len * 2
-        )
-
+        self.cis = precompute_freqs_cis(model_args.d_model // model_args.num_heads, model_args.seq_len * 2)
         if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
             print("WARNING: using slow attention | upgrade pytorch to 2.0 or above")
             mask = torch.full((1, 1, model_args.seq_len, model_args.seq_len), float("-inf"))
@@ -336,21 +274,22 @@ class Arctic(nn.Module):
             self.register_buffer("mask", mask)
         else:
             self.mask = None
-
         self.apply(self._init_weights)
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, targets=None):
         batch, seqlen = x.shape
         x = self.token_emb(x)
         device = self.token_emb.weight.device
         freqs_cis = self.cis[0][:seqlen].to(device), self.cis[1][:seqlen].to(device)
-
         for layer in self.layers:
             x = layer(x, self.mask, freqs_cis)
 
         x = self.norm(x)
-        x = self.vocab_proj(x)
-        return x
+        logits = self.vocab_proj(x)
+        loss = None
+        if targets is not None:
+            loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        return logits, loss
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -394,8 +333,5 @@ if __name__ == "__main__":
     device = "mps"
     model = Arctic(HybridConfig).to(device)
     model = torch.compile(model)
-
-    print("-" * 100)
     print(model)
     print(model_summary(model))
-    print("-" * 100)
