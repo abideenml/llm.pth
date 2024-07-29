@@ -12,8 +12,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-
-from llm.models.phi import Phi, PhiConfig, model_summary
+from lightning.fabric.plugins import BitsandbytesPrecision
+from llm.models.phi3 import Phi, PhiConfig, model_summary
 from llm.utils.scheduler import CosineScheduler
 from llm.utils.dataset import *
 from llm.utils.sftdata import *
@@ -50,7 +50,7 @@ seq_len: int = 256
 num_layers: int = 4
 num_heads: int = 4
 multiple_of: int = 4
-
+plugins = None
 assert d_model % num_heads == 0
 
 compile_model = not bool(sys.platform == "darwin")
