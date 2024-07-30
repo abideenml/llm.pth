@@ -1,18 +1,18 @@
+# ollama run MlChat
+# ollama run MlCopilot
 import torch
-from torch.nn.utils.rnn import pad_sequence
-from tqdm import tqdm
-from typing import Dict, List, Union, Tuple
+from typing import Tuple
 import torch.nn.functional as F
-import torch.nn as nn
 import time
 from llm.utils.scheduler import CosineScheduler
-from llm.utils.dataset import PreTokenizedDataset, BetterCycle, auto_accelerator
-from rich import print, traceback
+from llm.utils.dataset import auto_accelerator
+from rich import print
+import bitsandbytes as bnb
 from datasets import load_dataset
-from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
-from llm.models.phi import Phi, PhiConfig, model_summary
+from llm.models.phi3 import Phi, PhiConfig, model_summary
 import lightning as L
+from lightning.fabric.plugins import BitsandbytesPrecision
 from lightning.pytorch.loggers import WandbLogger
 
 ### CONFIGS
@@ -37,17 +37,17 @@ seq_len: int = 256
 num_layers: int = 4
 num_heads: int = 4
 multiple_of: int = 4
-
+plugins = None
 ### Dataset and Tokenizer
 dataset_name = "argilla/dpo-mix-7k"  # run pretokeinze first
 tokenizer_name = "microsoft/phi-2"
 model_name = "cognitivecomputations/dolphin-2_6-phi-2"
 ### Setup
 device = auto_accelerator()  # auto chose device (cuda, mps)
-
+precision = "16-true"
 # for restarting training from last checkout
 resume_traning = False
-
+# precision: The precision to use for finetuning. Possible choices: "bf16-true", "bf16-mixed", "32-true".
 
 
 class DPOTrainer:
@@ -67,18 +67,10 @@ class DPOTrainer:
         Compute the DPO loss for a batch of policy and reference model log probabilities.
         """
         
-        # References: Huggingface RTL Library and https://github.com/eric-mitchell/direct-preference-optimization
         pi_logratios = policy_chosen_logps - policy_rejected_logps
         ref_logratios = reference_chosen_logps - reference_rejected_logps
 
         logits = pi_logratios - ref_logratios
-        
-        # if ipo:
-        #     losses = (logits - 1/(2 * beta)) ** 2  # Eq. 17 of https://arxiv.org/pdf/2310.12036v2.pdf
-        # else:
-        #     # Eq. 3 https://ericmitchell.ai/cdpo.pdf; label_smoothing=0 gives original DPO (Eq. 7 of https://arxiv.org/pdf/2305.18290.pdf)
-        #     losses = -F.logsigmoid(beta * logits) * (1 - label_smoothing) - F.logsigmoid(-beta * logits) * label_smoothing
-
         if self.loss_type == "sigmoid":
             losses = (
                 -F.logsigmoid(self.beta * logits) * (1 - self.label_smoothing)
@@ -228,13 +220,16 @@ def main():
     }
     # fabric init
     logger = WandbLogger(project=wandb_project_name, resume=resume_traning)
-    fabric = L.Fabric(loggers=[logger])
+    dtype = {"16-true": torch.float16, "bf16-true": torch.bfloat16, "32-true": torch.float32}[precision]
+    plugins = BitsandbytesPrecision("nf4", dtype)
+    fabric = L.Fabric(loggers=[logger],precision=precision, plugins=plugins)
     fabric.logger.log_hyperparams(hyper_params)
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     tokenizer.pad_token = tokenizer.eos_token
     dataset = "argilla/dpo-mix-7k"
     dataset = load_dataset(dataset)
     model: Phi = Phi.from_pretrained("microsoft/phi-2").to(device).eval().to(torch.float16)
+
     model: L.LightningModule = fabric.setup(model)
     ref_model: Phi = Phi.from_pretrained("microsoft/phi-2").to(device).eval().to(torch.float16)
     ref_model: L.LightningModule = fabric.setup(ref_model)
@@ -250,10 +245,9 @@ def main():
         warmup_iters=warmup_iters,
         max_iters=max_iters,
     )
-
-    # inputs = torch.tensor(tokenizer.encode("The")).unsqueeze(0).clone().detach()
-    optimzer = torch.optim.AdamW(model.parameters(), lr=get_lr(0))
-    optimzer = fabric.setup_optimizers(optimzer)
+    optimizer_cls = bnb.optim.PagedAdamW
+    optimizer = optimizer_cls(model.parameters(),  lr=get_lr(0))
+    optimzer = fabric.setup_optimizers(optimizer)
     # Lets GO!!
     train(
         fabric,
@@ -267,10 +261,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-        # eval_iters=eval_iters,
-        # save_ckpt_iters=save_ckpt_iters,
-        # get_lr=get_lr,
-        # ignore_index=tokenizer.pad_token_id,
