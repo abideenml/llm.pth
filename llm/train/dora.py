@@ -13,7 +13,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 
-from llm.models.phi import Phi, PhiConfig, model_summary
+from llm.models.phi3 import Phi, PhiConfig, model_summary
 from llm.utils.scheduler import CosineScheduler
 from llm.utils.dataset import *
 from llm.utils.sftdata import *
