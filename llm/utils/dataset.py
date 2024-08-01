@@ -15,7 +15,7 @@ import os
 import requests
 import random
 
-PATH = Path("./data")
+PATH = Path("./llamadata")
 # "google/byt5-small"
 # "NeelNanda/gpt-neox-tokenizer-digits"
 
