@@ -9,7 +9,7 @@ import bitsandbytes as bnb
 from datasets import load_dataset
 from transformers import AutoTokenizer
 from torch.nn.functional import log_softmax, sigmoid
-from llm.models.phi import Phi, PhiConfig, model_summary
+from llm.models.phi3 import Phi, PhiConfig, model_summary
 import lightning as L
 from lightning.fabric.plugins import BitsandbytesPrecision
 from lightning.pytorch.loggers import WandbLogger
