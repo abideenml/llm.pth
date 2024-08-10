@@ -9,7 +9,7 @@ Implementation of various Autoregressive models, Research papers and techniques.
 ----------
 Formed a new architecture of LLMs which consists of 16k peer experts with 1024 shared 
 experts. Kendrick consists of MLHA for efficient KV cache and layer sharing concept. 
-Problem with Kendrick is that it doesn't scale above 240M on A40 gpu. Have to solve that!
+Problem with Kendrick is that it doesnt scale above 240M on A40 gpu. Have to solve that!
 
 2024-07-26
 ----------
