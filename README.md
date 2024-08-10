@@ -5,7 +5,62 @@ Implementation of various Autoregressive models, Research papers and techniques.
 
 ## Research log
 
-2024-05-06
+2024-08-08
+----------
+Formed a new architecture of LLMs which consists of 16k peer experts with 1024 shared 
+experts. Kendrick consists of MLHA for efficient KV cache and layer sharing concept. 
+Problem with Kendrick is that it doesn't scale above 240M on A40 gpu. Have to solve that!
+
+2024-07-26
+----------
+Implemented Mixture of Million experts paper from Google Deepmind (https://web3.arxiv.org/abs/2407.04153). 
+Peer arch is not that much efficient. Maybe a custom cuda kernel for it would be better.
+
+2024-07-15
+----------
+Tried out Dynamic token pruning for llm inference from 
+Lazyllm paper (https://arxiv.org/abs/2407.14057)
+
+
+2024-07-02
+----------
+Implemented Multi-Latent Head Attention (MLA) architecture (https://arxiv.org/abs/2405.04434). 
+Its KV cache is equal to GQA with only 2.25 groups, but its performance is stronger than MHA.
+
+2024-06-25
+----------
+Support for new Metas paper regarding Contextual position embedding added. 
+(https://arxiv.org/pdf/2405.18719)
+
+
+2024-06-17
+----------
+YaRN position embedding (https://arxiv.org/abs/2309.00071) added. Ramp function, attention scaling, and interpolation of specific frequenceis aded. 
+Medium blog also added regarding NTK, Linear RoPE, YaRN (https://medium.com/@zaiinn440/linear-rope-vs-ntk-vs-yarn-vs-cope-d33587ddfd35).
+
+2024-06-11
+----------
+Neural Tangent Kernel (NTK) and Linear RoPE support added. Only difference is of change of theta.                             
+                            
+2024-06-04
+----------
+MobileLLM architecture implemented. (https://arxiv.org/abs/2402.14905). Swiglu, layer sharing, embedding sharing, GQA used.
+
+2024-05-27
+----------
+Gemma2, llama3 and qwen2 architecture implemented. Qwen chunkllama for context length added.
+
+
+2024-05-18
+----------
+Mixture of Depths paper implemented.
+
+
+2024-05-13
+----------
+Arctic architecture of Snowflake implemented and Wandb blog posted.
+
+2024-05-08
 ----------
 DPO/KTO/IPO script added. Data prep for argilla/dpo-mix-7 added. 
 Currently single gpu, and no quantization supported.
@@ -61,23 +116,56 @@ Added LLM architectures i.e. Llama, phi, mixtral.
 Let's get this thing running! Follow the next steps:
 
 1. `git clone https://github.com/abideenml/llm.pth.git`
-2. Navigate into project directory `cd path_to_repo`
+2. Navigate into project directory `cd llm.pth`
 3. Create a new venv environment and run `pip install -e .`
 4. Run the `llm/utils/prepare-dataset.py` file for data downloading and tokenization.
-5. For pre-training, run `llm/train/pretrain.py`.
+5. For pre-training, run `python llm/train/pretrain.py`.
 
 That's it!<br/>
 
-## Todos:
+## Features
+
+This repo supports various LLM architectures, pretraining, and fine-tuning techniques 
+
+#### ✅ Supported Architectures
+* Llama
+* Mixtral
+* Phi3
+* Qwen2
+* Deepseekv2
+* Gemma2
+* Arctic
+* MobileLM
+
+#### ✅ Training Techniques
+* Pretraining
+* LoRA
+* QLoRA
+* DoRA
+* DPO
+* KTO
+* IPO
+
+#### ✅ Experiments
+* Contextual Position Embedding
+* LazyLLM
+* Multi-Latent Head Attention
+* YaRN, NTK
+* Mixture of Depths
+* Mixture of Million Experts
+* Combined architecture of Mome, Mobilelm, deepseekmoe
+
+## 🤞 Todos
 
 Finally there are a couple more todos which I'll hopefully add really soon:
-* LoRA and Dora
-* DPO/kto/ipo
-* Orpo
-* mod
+* ORPO
+* PPO
+* Rejection sampling
+* Add yaml config type training like Axolotl, so I don't have to rawdog sft and other techniques
+* Evals like ARC, sciq, and more
 
 
-## Citation
+## 🦋 Citation
 
 If you find this code useful, please cite the following:
 
