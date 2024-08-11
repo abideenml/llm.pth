@@ -7,7 +7,6 @@ import time
 import os
 import tiktoken
 import numpy as np
-from hellaswag import render_example, iterate_examples
 from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
