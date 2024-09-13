@@ -17,6 +17,7 @@ setup(
         "datasets",
         "torch",
         "wandb",
+        "tiktoken",
     ],
     python_requires=">=3.8",
 )
