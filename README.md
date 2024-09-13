@@ -4,6 +4,9 @@ Implementation of various Autoregressive models, Research papers and techniques.
 ```bash
 
 ## Research log
+2024-09-12
+----------
+apples flashsigmoid added to experiments.
 
 2024-08-08
 ----------
