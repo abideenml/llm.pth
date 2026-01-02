@@ -6,11 +6,11 @@ from datasets import load_dataset # pip install datasets
 from tqdm import tqdm # pip install tqdm
 
 # ------------------------------------------
-local_dir = "../data/edu_fineweb10B"
+local_dir = "./data/edu_fineweb10B"
 shard_size = int(1e7) # 100M tokens per shard, total of 100 shards
 
 # create the cache the local directory if it doesn't exist yet
-DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), local_dir)
+DATA_CACHE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", local_dir))
 os.makedirs(DATA_CACHE_DIR, exist_ok=True)
 
 # download the dataset

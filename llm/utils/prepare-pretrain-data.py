@@ -1,4 +1,5 @@
 import os
+import json
 from rich import print
 from pathlib import Path
 from transformers import AutoTokenizer
@@ -16,7 +17,7 @@ class DatasetPreprocessor:
         revision: str | None = None,
         num_proc: int | None = None,
         output_dir: Path = Path("./data"),
-        hf_cache: Path = Path("./hf_cache"), 
+        hf_cache: Path | None = None,
     ):
         if splits is None:
             splits = ["train", "test"]
@@ -26,8 +27,8 @@ class DatasetPreprocessor:
         self.max_length = max_length
         self.splits = splits
         self.output_dir = output_dir
-        self.hf_cache = hf_cache
         self.revision = revision
+        self.hf_cache = hf_cache
 
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         self.tokenizer.padding_side = "right"
@@ -36,16 +37,17 @@ class DatasetPreprocessor:
 
         self.num_proc = num_proc if num_proc else max(os.cpu_count() - 1, 1)
 
+
     def load_and_preprocess_dataset(self, split, remove_columns=None):
+
         if remove_columns is None:
             remove_columns = ["text"]
         dataset = load_dataset(
-            self.dataset_name,
-            split=split,
-            download_mode=DownloadMode.REUSE_CACHE_IF_EXISTS,
-            revision=self.revision,
-            cache_dir=self.hf_cache,
-        )
+                self.dataset_name,
+                split=split,
+                revision=self.revision,
+                cache_dir=str(self.hf_cache) if self.hf_cache else None,
+            )
 
         tokenized = (
             dataset.map(
@@ -67,17 +69,18 @@ class DatasetPreprocessor:
         return len(x["input_ids"]) >= self.min_length
 
     def save_pre_tokenized_dataset(self, dataset, split):
+       
         if not self.output_dir.exists():
             self.output_dir.mkdir(parents=True, exist_ok=True)
         fpath = "tinystories"
         print(self.output_dir.joinpath(fpath).joinpath(split))
         if split == "train":
             out = "./llamadata/train"
+            
             dataset.save_to_disk(out)
         else:
             out = "./llamadata/val"
             dataset.save_to_disk(out)
-
         print(f"Dataset saved to {self.output_dir}")
 
     def process_and_save(self, remove_columns=None):
@@ -100,7 +103,6 @@ def tinystories(
         dataset_name=dataset,
         tokenizer_name=tokenizer,
         splits=["train", "validation"],
-        hf_cache=Path("./hf_cache"),
     )
     preprocessor.process_and_save()
 
@@ -109,14 +111,20 @@ def minipile(
     dataset="JeanKaddour/minipile",
     tokenizer="EleutherAI/gpt-neo-125m",
 ):
+
     print(f"Pretokenizing {dataset=} with {tokenizer=}")
-    preprocessor = DatasetPreprocessor(
-        dataset_name=dataset,
-        tokenizer_name=tokenizer,
-        splits=["train", "validation"],
-        hf_cache=Path("./hf_cache"),
-    )
-    preprocessor.process_and_save()
+    try:
+        preprocessor = DatasetPreprocessor(
+            dataset_name=dataset,
+            tokenizer_name=tokenizer,
+            splits=["train", "validation"],
+            hf_cache=Path("./hf_cache"),
+        )
+
+        preprocessor.process_and_save()
+    except TypeError as e:
+
+        raise
 
 
 # datasets = {"openhermes": prepare_openhermes_2_5, "tinystories": tinystories, "minipile": minipile}
@@ -125,4 +133,3 @@ def minipile(
 if __name__ == "__main__":
     # minipile()
     tinystories()
-    # print(datasets.__version__)

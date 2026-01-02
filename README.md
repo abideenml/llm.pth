@@ -121,7 +121,7 @@ Let's get this thing running! Follow the next steps:
 1. `git clone https://github.com/abideenml/llm.pth.git`
 2. Navigate into project directory `cd llm.pth`
 3. Create a new venv environment and run `pip install -e .`
-4. Run the `llm/utils/prepare-dataset.py` file for data downloading and tokenization.
+4. Run the `llm/utils/fineweb.py` file for data downloading and tokenization.
 5. For pre-training, run `python llm/train/pretrain.py`.
 
 That's it!<br/>
