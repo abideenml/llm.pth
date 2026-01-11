@@ -4,9 +4,13 @@ Implementation of various Autoregressive models, Research papers and techniques.
 ```bash
 
 ## Research log
+2026-01-11
+----------
+deepseekv3.2 dsa added to architectures. dsa filters kv based on relevance to query before attention-> sparse attention O(Tk)<O(T^2) -> handles long context better
+
 2024-09-12
 ----------
-apples flashsigmoid added to experiments.
+flashsigmoid added to experiments.
 
 2024-08-08
 ----------
