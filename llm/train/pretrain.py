@@ -14,7 +14,7 @@ from rich import print, traceback
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from llm.models.llama3 import Llama, LlamaConfig
+from llm.models.deepseekv32 import Deepseekv32, Deepseekv32Config
 
 traceback.install()
 
@@ -332,8 +332,8 @@ def main():
     torch.set_float32_matmul_precision('high')
     
     # Create model
-    config = LlamaConfig()
-    model = Llama(config)
+    config = Deepseekv32Config()
+    model = Deepseekv32(config)
     model.to(device)
     
     use_compile = True
