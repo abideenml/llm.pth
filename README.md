@@ -4,6 +4,10 @@ Implementation of various Autoregressive models, Research papers and techniques.
 ```bash
 
 ## Research log
+2026-01-12
+----------
+mHC (https://arxiv.org/pdf/2512.24880) paper implemented in deepseekv3.2 architecture. mHC is residual connections on steroids but within a defined manifold for training stability. -> improves performances & scalability of models
+
 2026-01-11
 ----------
 deepseekv3.2 dsa added to architectures. dsa filters kv based on relevance to query before attention-> sparse attention O(Tk)<O(T^2) -> handles long context better
