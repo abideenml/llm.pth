@@ -4,6 +4,14 @@ Implementation of various Autoregressive models, Research papers and techniques.
 ```bash
 
 ## Research log
+2026-01-25
+----------
+updated eval section; added arc, winograde, mmlu.
+
+2026-01-23
+----------
+refactored the code, shifted base attention, rope, swiglu funxtions to core module.
+
 2026-01-12
 ----------
 mHC (https://arxiv.org/pdf/2512.24880) paper implemented in deepseekv3.2 architecture. 
