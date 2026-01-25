@@ -13,6 +13,12 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from torch.nn import functional as F
 
+from llm.core import (
+    RMSNorm,
+    SwiGLU,
+    precompute_freqs_cis,
+)
+
 @dataclass
 class MOEConfig:
     vocab_size: int = 50280
@@ -30,65 +36,7 @@ class MOEConfig:
     num_experts_per_tok: int = 2
 
 
-class SwiGLU(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        hidden_dim: int | None = None,
-        multiple_of: int = 4,
-        dropout: float | None = None,
-        bias: bool = False,
-    ):
-        """
-        GLU Variants Improve Transformer
-        https://arxiv.org/abs/2002.05202v1
 
-        order in which W1,W2,W3 are multiplied is as per llama (for compatiblity)
-        """
-        super().__init__()
-
-        if hidden_dim is None:
-            hidden_dim = 4 * dim
-            hidden_dim = int(2 * hidden_dim / 3)
-            hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
-
-        self.w1 = nn.Linear(dim, hidden_dim, bias=bias)
-        self.w2 = nn.Linear(hidden_dim, dim, bias=bias)
-        self.w3 = nn.Linear(dim, hidden_dim, bias=bias)
-        self.dropout = nn.Dropout(dropout) if dropout else lambda x: x
-
-    def forward(self, x):
-        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
-
-
-class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-5):
-        super().__init__()
-        """
-        Paper: https://arxiv.org/abs/1910.07467
-        """
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
-
-    def _norm(self, x: torch.Tensor):
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-
-    def forward(self, x):
-        output = self._norm(x.float()).type_as(x)
-        return output * self.weight
-
-def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-    # [: (dim // 2)] for odd number truncation
-    # torch.arange(0, dim, 2) -> 2(i-1)//d while i= 1,2,..,(d//2)
-
-    t = torch.arange(end, device=freqs.device)
-    freqs = torch.outer(t, freqs).float()  # gives diffrent angle vector
-
-    # e^it = cos(t) + i sin(t)
-    freqs_cos = torch.cos(freqs)  # real
-    freqs_sin = torch.sin(freqs)  # imaginary
-    return freqs_cos, freqs_sin
 
 
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):

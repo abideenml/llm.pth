@@ -1,5 +1,3 @@
-# ollama run MlChat
-# ollama run MlCopilot
 import torch
 from typing import Tuple
 import torch.nn.functional as F

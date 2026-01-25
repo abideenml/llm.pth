@@ -12,6 +12,10 @@ from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from torch.nn import functional as F
+from llm.core import (
+    Attention,
+    SwiGLU,
+)
 
 @dataclass
 class MOEConfig:
@@ -29,36 +33,6 @@ class MOEConfig:
     num_experts: int = 4
     num_experts_per_tok: int = 2
 
-
-class SwiGLU(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        hidden_dim: int | None = None,
-        multiple_of: int = 4,
-        dropout: float | None = None,
-        bias: bool = False,
-    ):
-        """
-        GLU Variants Improve Transformer
-        https://arxiv.org/abs/2002.05202v1
-
-        order in which W1,W2,W3 are multiplied is as per llama (for compatiblity)
-        """
-        super().__init__()
-
-        if hidden_dim is None:
-            hidden_dim = 4 * dim
-            hidden_dim = int(2 * hidden_dim / 3)
-            hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
-
-        self.w1 = nn.Linear(dim, hidden_dim, bias=bias)
-        self.w2 = nn.Linear(hidden_dim, dim, bias=bias)
-        self.w3 = nn.Linear(dim, hidden_dim, bias=bias)
-        self.dropout = nn.Dropout(dropout) if dropout else lambda x: x
-
-    def forward(self, x):
-        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
 
 
 
@@ -122,14 +96,6 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
 
 
 def apply_rope(k, q, cis):
-    # Idea suppose vector v = [x,y,x1,y1,...] # v.shape = dim
-    # convert vetor into complex num # ie two vec one real, one imagery
-    # [x,y,x1,y1,...] -> x+iy, x1+iy1
-    # Multiplying by complex num == roatate vector
-    # => (x + iy) * (cos + isin) -> x'+iy'
-    # restack
-    # x'+iy' -> [x',y',x1',y1'...]
-    # you roated vector in chunks of two lfg!!!
     _, seq_len, _, _ = q.shape
 
     freqs_cos, freqs_sin = cis
@@ -171,78 +137,6 @@ def apply_rope(k, q, cis):
 
 
 
-class Attention(nn.Module):
-    def __init__(self, model_args: MOEConfig):
-        super().__init__()
-        d_model = model_args.d_model
-        self.num_heads = model_args.num_heads
-        self.head_dim = model_args.d_model // model_args.num_heads
-        self.num_kv_heads = (
-            model_args.num_heads if model_args.num_kv_heads == 0 else model_args.num_kv_heads
-        )
-        assert self.num_heads % self.num_kv_heads == 0
-        self.num_queries_per_kv = self.num_heads // self.num_kv_heads
-        self.key = nn.Linear(d_model, self.head_dim * self.num_heads)
-        self.query = nn.Linear(d_model, self.head_dim * self.num_kv_heads)
-        self.value = nn.Linear(d_model, self.head_dim * self.num_kv_heads)
-        self.proj = nn.Linear(d_model, d_model, model_args.bias)
-
-        self.attn_dropout = nn.Dropout(model_args.dropout)
-        self.res_dropout = nn.Dropout(model_args.dropout)
-
-        self.flash_attn = hasattr(torch.nn.functional, "scaled_dot_product_attention")
-
-    def forward(self, x: torch.Tensor, mask: torch.Tensor, freqs_cis) -> torch.Tensor:
-        batch, seq_len, d_model = x.shape
-
-        k: torch.Tensor  # type hint for lsp
-        q: torch.Tensor  # ignore
-        v: torch.Tensor
-
-        k = self.key(x)
-        q = self.query(x)
-        v = self.value(x)
-
-        k = k.view(
-            batch, seq_len, self.num_heads, self.head_dim
-        )  # shape = (B, seq_len, num_heads, head_dim)
-        q = q.view(batch, seq_len, self.num_heads, self.head_dim)
-        v = v.view(batch, seq_len, self.num_heads, self.head_dim)
-        q, k = apply_rope(q, k, freqs_cis)
-
-        # Grouped Query Attention
-        if self.num_kv_heads != self.num_heads:
-            k = torch.repeat_interleave(k, self.num_queries_per_kv, dim=2)
-            v = torch.repeat_interleave(v, self.num_queries_per_kv, dim=2)
-
-        k = k.transpose(1, 2)  # shape = (B, num_heads, seq_len, head_dim)
-        q = q.transpose(1, 2)
-        v = v.transpose(1, 2)
-
-        
-        # output = F.scaled_dot_product_attention(
-        #     q,
-        #     k,
-        #     v,  # order impotent
-        #     attn_mask=None,
-        #     dropout_p=self.attn_dropout.p if self.training else 0.0,
-        #     is_causal=True,
-        # )
-        # else:
-        attn_mtx = torch.matmul(q, k.transpose(2, 3)) / math.sqrt(self.head_dim)
-        attn_mtx = attn_mtx + mask[:, :, :seq_len, :seq_len]
-        attn_mtx = F.softmax(attn_mtx.float(), dim=-1).type_as(k)
-        attn_mtx = self.attn_dropout(attn_mtx)
-
-        output = torch.matmul(attn_mtx, v)  # (batch, n_head, seq_len, head_dim)
-
-        # restore time as batch dimension and concat heads
-        output = output.transpose(1, 2).contiguous().view(batch, seq_len, d_model)
-
-        # final projection into the residual stream
-        output = self.proj(output)
-        output = self.res_dropout(output)
-        return output
 
 class MoE(nn.Module):
     def __init__(
@@ -615,40 +509,6 @@ for step in range(max_steps):
                 # rng seeds etc., if you wanted to more exactly resume training
                 torch.save(checkpoint, checkpoint_path)
 
-    # once in a while evaluate hellaswag
-    # if (step % 250 == 0 or last_step) and (use_compile):
-    #     num_correct_norm = 0
-    #     num_total = 0
-    #     for i, example in enumerate(iterate_examples("val")):
-    #         # only process examples where i % ddp_world_size == ddp_rank
-    #         if i % ddp_world_size != ddp_rank:
-    #             continue
-    #         # render the example into tokens and labels
-    #         _, tokens, mask, label = render_example(example)
-    #         tokens = tokens.to(device)
-    #         mask = mask.to(device)
-    #         # get the logits
-    #         with torch.no_grad():
-    #             with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-    #                 logits, loss = model(tokens)
-    #             pred_norm = get_most_likely_row(tokens, mask, logits)
-    #         num_total += 1
-    #         num_correct_norm += int(pred_norm == label)
-    #     # reduce the stats across all processes
-    #     if ddp:
-    #         num_total = torch.tensor(num_total, dtype=torch.long, device=device)
-    #         num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
-    #         dist.all_reduce(num_total, op=dist.ReduceOp.SUM)
-    #         dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
-    #         num_total = num_total.item()
-    #         num_correct_norm = num_correct_norm.item()
-    #     acc_norm = num_correct_norm / num_total
-    #     if master_process:
-    #         print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}")
-    #         with open(log_file, "a") as f:
-    #             f.write(f"{step} hella {acc_norm:.4f}\n")
-
-    # once in a while generate from the model (except step 0, which is noise)
     if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
         model.eval()
         num_return_sequences = 4
