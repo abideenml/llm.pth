@@ -14,7 +14,7 @@ from rich import print, traceback
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from llm.models.deepseekv32 import Deepseekv32, Deepseekv32Config
+from llm.experiments.mhc import Deepseekv32, Deepseekv32Config
 
 traceback.install()
 

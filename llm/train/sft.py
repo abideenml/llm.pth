@@ -31,7 +31,7 @@ traceback.install()
 
 
 ### CONFIGS
-wandb_project_name = "Ohara-LLAMA-Fabric"
+wandb_project_name = "LLAMA-Fabric"
 wandb_run_name = "run01"
 
 learning_rate: float = 5e-4
