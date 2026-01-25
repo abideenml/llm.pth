@@ -1,3 +1,12 @@
+"""
+Dataset utilities for LLM training.
+
+Includes:
+- PreTokenizedDataset for pre-tokenized data loading
+- TinyShakespeareDataset for small-scale testing
+- Utility functions for device selection and masking
+"""
+
 from __future__ import annotations
 from typing import Any
 from collections.abc import Iterable
@@ -8,7 +17,7 @@ from datasets import load_from_disk
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import IterableDataset, DataLoader
+from torch.utils.data import IterableDataset
 from pathlib import Path
 
 import os
@@ -16,8 +25,6 @@ import requests
 import random
 
 PATH = Path("./llamadata")
-# "google/byt5-small"
-# "NeelNanda/gpt-neox-tokenizer-digits"
 
 
 def get_tokenizer(self, tokenizer: AutoTokenizer | str = None):
@@ -54,15 +61,9 @@ class PreTokenizedDataset(IterableDataset):
         self.cache_dir = cache_dir
         self.dataset_name = dataset_name
 
-        # fpath = path
-        # if path == PATH:
-        #     fpath = str(
-        #         f"{self.dataset_name.replace('/','-')}--{self.tokenizer.name_or_path.replace('/','-')}"
-        #     )
-        #     fpath = path.joinpath(fpath).joinpath(split)
         if split == "train":
             self.ds = load_from_disk("./data/train")
-        else: 
+        else:
             self.ds = load_from_disk("./data/val")
         self.toks_cycle = cycle(self.ds)
 
@@ -97,7 +98,7 @@ class TinyShakespeareDataset(IterableDataset):
 
         self.data_path = path.joinpath(self.dataset_name + ".txt")
 
-        try:  # ugly ik
+        try:
             with open(self.data_path) as f:
                 self.data = torch.Tensor(tokenizer.encode(f.read())).long()
         except Exception:
@@ -118,35 +119,23 @@ class TinyShakespeareDataset(IterableDataset):
         response = requests.get(url)
         if not os.path.exists(PATH):
             os.makedirs(PATH)
-        if response.status_code == 200: 
+        if response.status_code == 200:
             with open(self.data_path, "w", encoding="utf-8") as file:
                 file.write(response.text)
         else:
             raise Exception(f"Failed to download data. Status code: {response.status_code}")
 
 
-# if __name__ == "__main__":
-#     tokenizer = AutoTokenizer.from_pretrained("microsoft/phi-2")
-#     dataset = PreTokenizedDataset(
-#         dataset_name="roneneldan/TinyStories", tokenizer=tokenizer, cache_dir="hf_cache"
-#     )
-#     dataloder = DataLoader(dataset, batch_size=2)
-
-#     for data, target in dataloder:
-#         print(data.shape, target.shape)
-#         exit(0)
-#         # print(tokenizer.decode(data.tolist())) 
-
-
-
-
 def auto_accelerator(device: str | None = None) -> torch.device:
     """
-    Automatically selects and returns a torch device. If a device is specified, it validates and returns the specified device.
-    If no device is specified, it checks for available devices in the order of CUDA, MPS (Apple Silicon GPUs), and defaults to CPU if none are available.
+    Automatically selects and returns a torch device.
+
+    If a device is specified, it validates and returns the specified device.
+    If no device is specified, it checks for available devices in the order
+    of CUDA, MPS (Apple Silicon GPUs), and defaults to CPU if none are available.
 
     Args:
-        device (str, optional): The name of the device to use. Can be 'cpu', 'cuda', 'mps', or None. Defaults to None.
+        device: The name of the device to use. Can be 'cpu', 'cuda', 'mps', or None.
 
     Returns:
         torch.device: The selected torch device.
@@ -168,6 +157,7 @@ def auto_accelerator(device: str | None = None) -> torch.device:
 
 
 def build_mask(seq_len, sliding_window_attention=False, window_size=1):
+    """Build causal attention mask with optional sliding window."""
     mask = torch.full((seq_len, seq_len), float("-inf"))
 
     assert window_size != 0, "window_size cannot be 0"
@@ -187,12 +177,13 @@ def build_mask(seq_len, sliding_window_attention=False, window_size=1):
 @dataclass
 class BetterCycle:
     """
-    A data class that implements a better cycle iterator over any iterable. It cycles through the iterable indefinitely.
+    A data class that implements a better cycle iterator over any iterable.
+    It cycles through the iterable indefinitely and tracks cycle count.
 
     Attributes:
-        iterable (Iterable): The iterable to cycle through.
-        idx (int): The current cycle index (how many times the iterable has been cycled through). Defaults to 0.
-        _iterator (Iterable, optional): The iterator generated from the iterable. This is used to keep track of the current iteration state. Defaults to None.
+        iterable: The iterable to cycle through.
+        idx: The current cycle index (how many times the iterable has been cycled through).
+        _iterator: The iterator generated from the iterable.
     """
 
     iterable: Iterable
@@ -212,5 +203,3 @@ class BetterCycle:
             self.idx += 1
             self._iterator = iter(self.iterable)
             return next(self._iterator)
-
-

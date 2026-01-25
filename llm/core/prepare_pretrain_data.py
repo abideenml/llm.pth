@@ -1,12 +1,20 @@
+"""
+Dataset preprocessing for pretraining.
+
+Provides utilities for tokenizing and preparing datasets for LLM pretraining.
+Run as: python -m llm.core.prepare_pretrain_data
+"""
+
 import os
-import json
 from rich import print
 from pathlib import Path
 from transformers import AutoTokenizer
-import datasets
-from datasets import load_dataset, DownloadMode
+from datasets import load_dataset
+
 
 class DatasetPreprocessor:
+    """Preprocessor for tokenizing datasets for LLM pretraining."""
+
     def __init__(
         self,
         dataset_name: str = "JeanKaddour/minipile",
@@ -37,17 +45,15 @@ class DatasetPreprocessor:
 
         self.num_proc = num_proc if num_proc else max(os.cpu_count() - 1, 1)
 
-
     def load_and_preprocess_dataset(self, split, remove_columns=None):
-
         if remove_columns is None:
             remove_columns = ["text"]
         dataset = load_dataset(
-                self.dataset_name,
-                split=split,
-                revision=self.revision,
-                cache_dir=str(self.hf_cache) if self.hf_cache else None,
-            )
+            self.dataset_name,
+            split=split,
+            revision=self.revision,
+            cache_dir=str(self.hf_cache) if self.hf_cache else None,
+        )
 
         tokenized = (
             dataset.map(
@@ -69,14 +75,12 @@ class DatasetPreprocessor:
         return len(x["input_ids"]) >= self.min_length
 
     def save_pre_tokenized_dataset(self, dataset, split):
-       
         if not self.output_dir.exists():
             self.output_dir.mkdir(parents=True, exist_ok=True)
         fpath = "tinystories"
         print(self.output_dir.joinpath(fpath).joinpath(split))
         if split == "train":
             out = "./llamadata/train"
-            
             dataset.save_to_disk(out)
         else:
             out = "./llamadata/val"
@@ -98,6 +102,7 @@ def tinystories(
     dataset="roneneldan/TinyStories",
     tokenizer="NousResearch/Llama-2-7b-hf",
 ):
+    """Prepare TinyStories dataset."""
     print(f"Pretokenizing {dataset=} with {tokenizer=}")
     preprocessor = DatasetPreprocessor(
         dataset_name=dataset,
@@ -111,7 +116,7 @@ def minipile(
     dataset="JeanKaddour/minipile",
     tokenizer="EleutherAI/gpt-neo-125m",
 ):
-
+    """Prepare Minipile dataset."""
     print(f"Pretokenizing {dataset=} with {tokenizer=}")
     try:
         preprocessor = DatasetPreprocessor(
@@ -120,16 +125,10 @@ def minipile(
             splits=["train", "validation"],
             hf_cache=Path("./hf_cache"),
         )
-
         preprocessor.process_and_save()
-    except TypeError as e:
-
+    except TypeError:
         raise
 
 
-# datasets = {"openhermes": prepare_openhermes_2_5, "tinystories": tinystories, "minipile": minipile}
-
-
 if __name__ == "__main__":
-    # minipile()
     tinystories()

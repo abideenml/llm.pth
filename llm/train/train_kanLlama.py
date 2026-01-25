@@ -14,8 +14,8 @@ import torch.optim as optim
 
 
 from llm.models.kanLlama import LLAMA, Config, model_summary
-from llm.utils.scheduler import CosineScheduler
-from llm.utils.dataset import PreTokenizedDataset, BetterCycle, auto_accelerator
+from llm.core.scheduler import CosineScheduler
+from llm.core.dataset import PreTokenizedDataset, BetterCycle, auto_accelerator
 
 
 
