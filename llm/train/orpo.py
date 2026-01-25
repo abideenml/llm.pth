@@ -2,8 +2,8 @@ import torch
 from typing import Tuple
 import torch.nn.functional as F
 import time
-from llm.utils.scheduler import CosineScheduler
-from llm.utils.dataset import auto_accelerator
+from llm.core.scheduler import CosineScheduler
+from llm.core.dataset import auto_accelerator
 from rich import print
 import bitsandbytes as bnb
 from datasets import load_dataset

@@ -14,9 +14,15 @@ import torch.optim as optim
 
 
 from llm.models.phi3 import Phi, PhiConfig, model_summary
-from llm.utils.scheduler import CosineScheduler
-from llm.utils.dataset import *
-from llm.utils.sftdata import *
+from llm.core.scheduler import CosineScheduler
+from llm.core.dataset import (
+    PreTokenizedDataset,
+    TinyShakespeareDataset,
+    BetterCycle,
+    auto_accelerator,
+    build_mask,
+)
+from llm.core.sftdata import format_dataset, sft_dataset, get_sft_collate_fn
 
 
 from torch.utils.data import DataLoader
