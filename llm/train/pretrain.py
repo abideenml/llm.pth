@@ -15,6 +15,7 @@ from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from llm.models.deepseekv32 import Deepseekv32, Deepseekv32Config
+from llm.eval import BenchmarkRunner, HellaSwagEvaluator, ARCEvaluator, WinograndeEvaluator
 
 traceback.install()
 
@@ -34,6 +35,8 @@ DEFAULT_SAVE_CKPT_STEPS = 5000
 DEFAULT_LOG_DIR = "checkpoints"
 DEFAULT_WEIGHT_DECAY = 0.1
 DEFAULT_LEARNING_RATE = 6e-4
+DEFAULT_BENCHMARK_STEPS = 300  # Run benchmarks every N steps
+DEFAULT_BENCHMARK_MAX_EXAMPLES = 200  # Limit examples for faster evaluation during training
 
 
 class DataLoaderLite:
@@ -281,6 +284,154 @@ def generate_samples(model, enc, device, device_type, ddp_rank, max_length=32, n
         print(f"Rank {ddp_rank} sample {i}: {decoded}")
 
 
+class TiktokenWrapper:
+    """Wrapper to make tiktoken compatible with HuggingFace tokenizer interface."""
+
+    def __init__(self, enc):
+        self.enc = enc
+        self.pad_token_id = enc.eot_token
+        self.eos_token_id = enc.eot_token
+
+    def encode(self, text, add_special_tokens=True):
+        return self.enc.encode(text)
+
+    def decode(self, tokens):
+        return self.enc.decode(tokens)
+
+    def __call__(self, text, **kwargs):
+        tokens = self.encode(text)
+        return {"input_ids": tokens}
+
+
+def run_benchmarks(model, tokenizer, device, master_process, max_examples=200, verbose=False):
+    """
+    Run evaluation benchmarks on the model.
+
+    Args:
+        model: The model to evaluate (raw model, not DDP wrapped)
+        tokenizer: Tokenizer (or tiktoken wrapper)
+        device: Device to run evaluation on
+        master_process: Whether this is the master process
+        max_examples: Maximum examples per benchmark (for faster evaluation)
+        verbose: Whether to show progress bars
+
+    Returns:
+        Dictionary with benchmark results
+    """
+    if not master_process:
+        return {}
+
+    model.eval()
+    results = {}
+
+    try:
+        # HellaSwag - commonsense reasoning
+        if master_process:
+            print("Running HellaSwag evaluation...")
+        hellaswag_eval = HellaSwagEvaluator(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+        )
+        hellaswag_result = hellaswag_eval.evaluate(
+            max_examples=max_examples,
+            verbose=verbose,
+        )
+        results["hellaswag"] = {
+            "accuracy": hellaswag_result.accuracy,
+            "accuracy_norm": hellaswag_result.accuracy_norm,
+        }
+        if master_process:
+            print(f"  HellaSwag: {hellaswag_result.accuracy:.4f} (norm: {hellaswag_result.accuracy_norm:.4f})")
+    except Exception as e:
+        if master_process:
+            print(f"  HellaSwag failed: {e}")
+        results["hellaswag"] = {"error": str(e)}
+
+    try:
+        # ARC-Easy - science reasoning (easier)
+        if master_process:
+            print("Running ARC-Easy evaluation...")
+        arc_easy_eval = ARCEvaluator(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            difficulty="easy",
+        )
+        arc_easy_result = arc_easy_eval.evaluate(
+            max_examples=max_examples,
+            verbose=verbose,
+        )
+        results["arc_easy"] = {
+            "accuracy": arc_easy_result.accuracy,
+            "accuracy_norm": arc_easy_result.accuracy_norm,
+        }
+        if master_process:
+            print(f"  ARC-Easy: {arc_easy_result.accuracy:.4f} (norm: {arc_easy_result.accuracy_norm:.4f})")
+    except Exception as e:
+        if master_process:
+            print(f"  ARC-Easy failed: {e}")
+        results["arc_easy"] = {"error": str(e)}
+
+    try:
+        # ARC-Challenge - science reasoning (harder)
+        if master_process:
+            print("Running ARC-Challenge evaluation...")
+        arc_challenge_eval = ARCEvaluator(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            difficulty="challenge",
+        )
+        arc_challenge_result = arc_challenge_eval.evaluate(
+            max_examples=max_examples,
+            verbose=verbose,
+        )
+        results["arc_challenge"] = {
+            "accuracy": arc_challenge_result.accuracy,
+            "accuracy_norm": arc_challenge_result.accuracy_norm,
+        }
+        if master_process:
+            print(f"  ARC-Challenge: {arc_challenge_result.accuracy:.4f} (norm: {arc_challenge_result.accuracy_norm:.4f})")
+    except Exception as e:
+        if master_process:
+            print(f"  ARC-Challenge failed: {e}")
+        results["arc_challenge"] = {"error": str(e)}
+
+    try:
+        # WinoGrande - pronoun resolution
+        if master_process:
+            print("Running WinoGrande evaluation...")
+        winogrande_eval = WinograndeEvaluator(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+        )
+        winogrande_result = winogrande_eval.evaluate(
+            max_examples=max_examples,
+            verbose=verbose,
+        )
+        results["winogrande"] = {
+            "accuracy": winogrande_result.accuracy,
+            "accuracy_norm": winogrande_result.accuracy_norm,
+        }
+        if master_process:
+            print(f"  WinoGrande: {winogrande_result.accuracy:.4f} (norm: {winogrande_result.accuracy_norm:.4f})")
+    except Exception as e:
+        if master_process:
+            print(f"  WinoGrande failed: {e}")
+        results["winogrande"] = {"error": str(e)}
+
+    # Compute average accuracy across successful benchmarks
+    accuracies = [r["accuracy"] for r in results.values() if "accuracy" in r]
+    if accuracies:
+        results["average"] = sum(accuracies) / len(accuracies)
+        if master_process:
+            print(f"  Average: {results['average']:.4f}")
+
+    return results
+
+
 def main():
     """Main training loop."""
     # Setup distributed training
@@ -295,6 +446,8 @@ def main():
     
     # Initialize tokenizer
     enc = tiktoken.get_encoding("gpt2")
+    # Create a wrapper for tiktoken to work with eval benchmarks
+    tokenizer_wrapper = TiktokenWrapper(enc)
     
     # Training hyperparameters
     total_batch_size = DEFAULT_TOTAL_BATCH_SIZE
@@ -352,6 +505,8 @@ def main():
     eval_steps = DEFAULT_EVAL_STEPS
     max_steps = DEFAULT_MAX_STEPS
     save_ckpt_steps = DEFAULT_SAVE_CKPT_STEPS
+    benchmark_steps = DEFAULT_BENCHMARK_STEPS
+    benchmark_max_examples = DEFAULT_BENCHMARK_MAX_EXAMPLES
     log_dir = DEFAULT_LOG_DIR
     
     # Create optimizer
@@ -370,6 +525,8 @@ def main():
         "warmup_steps": warmup_steps,
         "max_steps": max_steps,
         "eval_steps": eval_steps,
+        "benchmark_steps": benchmark_steps,
+        "benchmark_max_examples": benchmark_max_examples,
         "batch_size": total_batch_size,
         "micro_batch": micro_batch,
         "seq_len": seq_len,
@@ -419,6 +576,40 @@ def main():
                     }
                     fabric.save(checkpoint_path, state)
         
+        # Run benchmarks periodically to track model improvement
+        if (step > 0 and step % benchmark_steps == 0) or last_step:
+            if master_process:
+                print(f"\n{'='*50}")
+                print(f"Running benchmarks at step {step}...")
+                print("=" * 50)
+
+            benchmark_results = run_benchmarks(
+                model=raw_model,
+                tokenizer=tokenizer_wrapper,
+                device=torch.device(device),
+                master_process=master_process,
+                max_examples=benchmark_max_examples,
+                verbose=False,
+            )
+
+            if master_process and benchmark_results:
+                # Log benchmark results
+                benchmark_log = {}
+                for bench_name, bench_result in benchmark_results.items():
+                    if isinstance(bench_result, dict) and "accuracy" in bench_result:
+                        benchmark_log[f"benchmark/{bench_name}"] = bench_result["accuracy"]
+                        if "accuracy_norm" in bench_result:
+                            benchmark_log[f"benchmark/{bench_name}_norm"] = bench_result["accuracy_norm"]
+                    elif bench_name == "average":
+                        benchmark_log["benchmark/average"] = bench_result
+
+                try:
+                    fabric.log_dict(benchmark_log, step=step)
+                except Exception as e:
+                    print(f"Error logging benchmarks: {e}")
+
+                print("=" * 50 + "\n")
+
         # Generate samples periodically (skip if using torch.compile)
         if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
             generate_samples(model, enc, device, device_type, ddp_rank)
